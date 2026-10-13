@@ -2,184 +2,167 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import os
 
-# --- Page Configuration ---
 st.set_page_config(
-    page_title="E-Commerce Sales & Customer Insights",
+    page_title="E-Commerce Insights & Custom Dataset Analyzer",
     page_icon="📊",
     layout="wide"
 )
 
-# --- Data Loading and Cleaning ---
+st.title("📊 E-Commerce Insights & Custom Dataset Analyzer")
+st.markdown("Analyze sales performance or upload your own dataset to inspect its structure, KPIs, and summaries.")
+
+# --- Sidebar: Data Source Selection ---
+st.sidebar.header("📁 Data Source")
+uploaded_file = st.sidebar.file_uploader("Upload your own CSV dataset", type=["csv"])
+
 @st.cache_data
-def load_and_clean_data(filepath: str) -> pd.DataFrame:
-    df = pd.read_csv(filepath)
-    df["order_date"] = pd.to_datetime(df["order_date"])
-    df.drop_duplicates(inplace=True)
-    # Filter out cancelled orders; retain refunds for accounting view
-    df = df[df["status"] != "Cancelled"]
-    df["net_sales"] = df.apply(
-        lambda row: 0 if row["status"] == "Refunded" else row["gross_sales"], axis=1
+def load_default_data():
+    file_path = "data/ecommerce_data.csv"
+    if os.path.exists(file_path):
+        df = pd.read_csv(file_path)
+        df["order_date"] = pd.to_datetime(df["order_date"])
+        df.drop_duplicates(inplace=True)
+        df = df[df["status"] != "Cancelled"]
+        df["net_sales"] = df.apply(lambda r: 0 if r["status"] == "Refunded" else r["gross_sales"], axis=1)
+        df["order_month"] = df["order_date"].dt.to_period("M").astype(str)
+        return df, True
+    return None, False
+
+if uploaded_file is not None:
+    try:
+        df = pd.read_csv(uploaded_file)
+        is_default_schema = False
+        st.sidebar.success("Custom CSV successfully loaded!")
+    except Exception as e:
+        st.error(f"Error loading uploaded file: {e}")
+        st.stop()
+else:
+    df, is_default_schema = load_default_data()
+    if df is None:
+        st.warning("No default dataset found. Please upload a CSV file from the sidebar.")
+        st.stop()
+    st.sidebar.info("Using default e-commerce dataset. Upload a file above to analyze custom data.")
+
+# --- Mode 1: Generic Dataset Analyzer (For any uploaded dataset) ---
+st.subheader("📋 Dataset Overview & Metadata")
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1.metric("Total Rows", f"{df.shape[0]:,}")
+col_m2.metric("Total Columns", f"{df.shape[1]:,}")
+col_m3.metric("Missing Values", f"{df.isna().sum().sum():,}")
+col_m4.metric("Duplicate Rows", f"{df.duplicated().sum():,}")
+
+with st.expander("🔍 View Raw Data Sample & Column Data Types", expanded=False):
+    st.dataframe(df.head(10), use_container_width=True)
+    type_df = pd.DataFrame({"Column": df.columns, "Data Type": [str(t) for t in df.dtypes]})
+    st.table(type_df)
+
+# --- Mode 2: Standard E-Commerce Dashboard (If schema matches) ---
+required_ecommerce_cols = {"order_id", "customer_id", "order_date", "product_category", "region", "net_sales", "profit", "status"}
+if required_ecommerce_cols.issubset(set(df.columns)):
+    st.divider()
+    st.subheader("📈 E-Commerce Performance Dashboard")
+
+    st.sidebar.header("Filter Analytics")
+    selected_regions = st.sidebar.multiselect(
+        "Select Region",
+        options=df["region"].dropna().unique(),
+        default=df["region"].dropna().unique()
     )
-    df["order_month"] = df["order_date"].dt.to_period("M").astype(str)
-    return df
-
-df = load_and_clean_data("data/ecommerce_data.csv")
-
-# --- Sidebar Filters ---
-st.sidebar.header("Global Filters")
-selected_regions = st.sidebar.multiselect(
-    "Select Region",
-    options=df["region"].unique(),
-    default=df["region"].unique()
-)
-selected_categories = st.sidebar.multiselect(
-    "Select Category",
-    options=df["product_category"].unique(),
-    default=df["product_category"].unique()
-)
-
-filtered_df = df[
-    (df["region"].isin(selected_regions)) &
-    (df["product_category"].isin(selected_categories))
-]
-
-# --- Main Dashboard Header ---
-st.title("📊 E-commerce Sales & Customer Insights Dashboard")
-st.markdown("Monitor revenue drivers, regional metrics, category health, and customer retention.")
-
-# --- Step 3 KPIs ---
-completed_df = filtered_df[filtered_df["status"] == "Completed"]
-total_revenue = completed_df["net_sales"].sum()
-total_orders = completed_df["order_id"].nunique()
-aov = total_revenue / total_orders if total_orders > 0 else 0
-total_profit = completed_df["profit"].sum()
-profit_margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
-
-# Repeat customer rate
-orders_per_cust = completed_df.groupby("customer_id")["order_id"].nunique()
-repeat_customers = (orders_per_cust > 1).sum()
-total_customers = orders_per_cust.count()
-repeat_rate = (repeat_customers / total_customers * 100) if total_customers > 0 else 0
-
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Revenue", f"${total_revenue:,.2f}")
-col2.metric("Total Orders", f"{total_orders:,}")
-col3.metric("Avg Order Value (AOV)", f"${aov:,.2f}")
-col4.metric("Profit Margin", f"{profit_margin:.1f}%")
-col5.metric("Repeat Customer Rate", f"{repeat_rate:.1f}%")
-
-st.divider()
-
-# --- Visualizations ---
-tab1, tab2, tab3 = st.tabs(["Sales Trends & Geography", "Category & Product Performance", "Customer Segmentation"])
-
-with tab1:
-    col_left, col_right = st.columns(2)
-    
-    # Monthly Revenue Trend
-    monthly_trend = (
-        completed_df.groupby("order_month")["net_sales"]
-        .sum()
-        .reset_index()
-        .sort_values("order_month")
+    selected_categories = st.sidebar.multiselect(
+        "Select Category",
+        options=df["product_category"].dropna().unique(),
+        default=df["product_category"].dropna().unique()
     )
-    fig_trend = px.line(
-        monthly_trend,
-        x="order_month",
-        y="net_sales",
-        markers=True,
-        title="Monthly Net Revenue Trend",
-        labels={"order_month": "Month", "net_sales": "Revenue ($)"}
-    )
-    col_left.plotly_chart(fig_trend, use_container_width=True)
 
-    # Regional Distribution
-    reg_sales = completed_df.groupby("region")["net_sales"].sum().reset_index()
-    fig_reg = px.pie(
-        reg_sales,
-        values="net_sales",
-        names="region",
-        title="Revenue by Region",
-        hole=0.4
-    )
-    col_right.plotly_chart(fig_reg, use_container_width=True)
+    filtered_df = df[
+        (df["region"].isin(selected_regions)) &
+        (df["product_category"].isin(selected_categories))
+    ]
 
-with tab2:
-    col_left2, col_right2 = st.columns(2)
-    
-    # Revenue & Margin by Category
-    cat_summary = (
-        completed_df.groupby("product_category")
-        .agg(Revenue=("net_sales", "sum"), Profit=("profit", "sum"))
-        .reset_index()
-    )
-    fig_cat = px.bar(
-        cat_summary,
-        x="product_category",
-        y=["Revenue", "Profit"],
-        barmode="group",
-        title="Revenue vs. Profit by Category",
-        labels={"value": "Amount ($)", "product_category": "Category"}
-    )
-    col_left2.plotly_chart(fig_cat, use_container_width=True)
+    completed_df = filtered_df[filtered_df["status"] == "Completed"]
+    total_revenue = completed_df["net_sales"].sum()
+    total_orders = completed_df["order_id"].nunique()
+    aov = total_revenue / total_orders if total_orders > 0 else 0
+    total_profit = completed_df["profit"].sum()
+    profit_margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
 
-    # Refund Rate by Category
-    refund_counts = (
-        filtered_df.groupby("product_category")["status"]
-        .apply(lambda s: (s == "Refunded").mean() * 100)
-        .reset_index(name="refund_rate_pct")
-    )
-    fig_ref = px.bar(
-        refund_counts,
-        x="product_category",
-        y="refund_rate_pct",
-        color="refund_rate_pct",
-        color_continuous_scale="Reds",
-        title="Refund Rate by Category (%)",
-        labels={"refund_rate_pct": "Refund Rate (%)", "product_category": "Category"}
-    )
-    col_right2.plotly_chart(fig_ref, use_container_width=True)
+    orders_per_cust = completed_df.groupby("customer_id")["order_id"].nunique()
+    repeat_rate = ((orders_per_cust > 1).sum() / orders_per_cust.count() * 100) if orders_per_cust.count() > 0 else 0
 
-with tab3:
-    # RFM Scoring & Behavior
-    snapshot_date = df["order_date"].max()
-    rfm = completed_df.groupby("customer_id").agg({
-        "order_date": lambda x: (snapshot_date - x.max()).days,
-        "order_id": "nunique",
-        "net_sales": "sum"
-    }).rename(columns={"order_date": "Recency", "order_id": "Frequency", "net_sales": "Monetary"})
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    kpi1.metric("Total Revenue", f"${total_revenue:,.2f}")
+    kpi2.metric("Total Orders", f"{total_orders:,}")
+    kpi3.metric("Avg Order Value", f"${aov:,.2f}")
+    kpi4.metric("Profit Margin", f"{profit_margin:.1f}%")
+    kpi5.metric("Repeat Customer Rate", f"{repeat_rate:.1f}%")
 
-    def assign_segment(row):
-        if row["Monetary"] > rfm["Monetary"].quantile(0.75) and row["Frequency"] > 1:
-            return "VIP High-Value"
-        elif row["Frequency"] > 1:
-            return "Loyal Regular"
-        elif row["Recency"] > 180:
-            return "At-Risk / Inactive"
-        return "Standard / New"
+    tab1, tab2, tab3 = st.tabs(["Sales Trends & Geography", "Category Breakdown", "Customer Cohorts"])
 
-    rfm["Segment"] = rfm.apply(assign_segment, axis=1)
-    seg_counts = rfm["Segment"].value_counts().reset_index()
-    seg_counts.columns = ["Segment", "Count"]
+    with tab1:
+        c1, c2 = st.columns(2)
+        if "order_month" in completed_df.columns:
+            m_trend = completed_df.groupby("order_month")["net_sales"].sum().reset_index().sort_values("order_month")
+            fig1 = px.line(m_trend, x="order_month", y="net_sales", markers=True, title="Monthly Net Sales")
+            c1.plotly_chart(fig1, use_container_width=True)
+        reg_df = completed_df.groupby("region")["net_sales"].sum().reset_index()
+        fig2 = px.pie(reg_df, values="net_sales", names="region", title="Revenue by Region", hole=0.4)
+        c2.plotly_chart(fig2, use_container_width=True)
 
-    fig_rfm = px.bar(
-        seg_counts,
-        x="Segment",
-        y="Count",
-        color="Segment",
-        title="Customer Segmentation Breakdown",
-        text_auto=True
-    )
-    st.plotly_chart(fig_rfm, use_container_width=True)
+    with tab2:
+        c3, c4 = st.columns(2)
+        cat_summary = completed_df.groupby("product_category").agg(Revenue=("net_sales", "sum"), Profit=("profit", "sum")).reset_index()
+        fig3 = px.bar(cat_summary, x="product_category", y=["Revenue", "Profit"], barmode="group", title="Revenue vs Profit by Category")
+        c3.plotly_chart(fig3, use_container_width=True)
 
-st.divider()
+        ref_summary = filtered_df.groupby("product_category")["status"].apply(lambda s: (s == "Refunded").mean() * 100).reset_index(name="refund_pct")
+        fig4 = px.bar(ref_summary, x="product_category", y="refund_pct", title="Refund Rate by Category (%)", color="refund_pct", color_continuous_scale="Reds")
+        c4.plotly_chart(fig4, use_container_width=True)
 
-# --- Strategic Recommendations ---
-st.subheader("📌 Key Findings & Data-Backed Recommendations")
-st.markdown("""
-* **Prioritize High-Margin Categories:** Reallocate digital ad spend toward categories generating the highest net margin per dollar spent.
-* **Target At-Risk Customers:** Launch automated win-back discount sequences for customers in the *At-Risk / Inactive* cohort before recency crosses 200 days.
-* **Investigate High-Refund Drivers:** Inspect product return reasons for categories showing elevated refund rates to reduce inventory and logistics losses.
-* **Capitalize on Regional Leaders:** Double down on inventory fulfillment centers in the top-performing sales regions to lower transit times and increase conversion.
-""")
+    with tab3:
+        snapshot_date = pd.to_datetime(completed_df["order_date"]).max()
+        rfm = completed_df.groupby("customer_id").agg({
+            "order_date": lambda x: (snapshot_date - pd.to_datetime(x).max()).days,
+            "order_id": "nunique",
+            "net_sales": "sum"
+        }).rename(columns={"order_date": "Recency", "order_id": "Frequency", "net_sales": "Monetary"})
+
+        def segment_rfm(row):
+            if row["Monetary"] > rfm["Monetary"].quantile(0.75) and row["Frequency"] > 1:
+                return "VIP High-Value"
+            elif row["Frequency"] > 1:
+                return "Loyal Regular"
+            elif row["Recency"] > 180:
+                return "At-Risk / Inactive"
+            return "Standard / New"
+
+        rfm["Segment"] = rfm.apply(segment_rfm, axis=1)
+        seg_counts = rfm["Segment"].value_counts().reset_index()
+        seg_counts.columns = ["Segment", "Count"]
+        fig5 = px.bar(seg_counts, x="Segment", y="Count", color="Segment", title="RFM Customer Segmentation", text_auto=True)
+        st.plotly_chart(fig5, use_container_width=True)
+
+else:
+    # --- Mode 3: Custom Dataset Generic Visualizer ---
+    st.divider()
+    st.subheader("📊 Interactive Data Visualizer (Custom Dataset)")
+    st.info("The uploaded file has unique columns. Select columns below to automatically generate plots.")
+
+    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    categorical_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+
+    if numeric_cols and categorical_cols:
+        viz_col1, viz_col2 = st.columns(2)
+        cat_select = viz_col1.selectbox("Select Categorical Column (Grouping)", categorical_cols)
+        num_select = viz_col2.selectbox("Select Numeric Column (Metric)", numeric_cols)
+
+        agg_df = df.groupby(cat_select)[num_select].sum().reset_index().sort_values(num_select, ascending=False).head(15)
+        fig_custom = px.bar(agg_df, x=cat_select, y=num_select, title=f"Top 15: {num_select} by {cat_select}", color=num_select)
+        st.plotly_chart(fig_custom, use_container_width=True)
+    elif numeric_cols:
+        selected_metric = st.selectbox("Select Numeric Metric to view distribution", numeric_cols)
+        fig_hist = px.histogram(df, x=selected_metric, title=f"Distribution of {selected_metric}")
+        st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.write("No numeric fields available to plot.")
